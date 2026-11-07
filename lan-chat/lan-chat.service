@@ -1,15 +1,15 @@
 # Draft, not installed. See README.md
 [Unit]
 Description=LAN chat page for local Ollama
-After=network-online.target ollama.service
-Wants=network-online.target
+After=network-online.target ollama.service lan-chat-web.service
+Wants=network-online.target lan-chat-web.service
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=lan-chat
 Group=lan-chat
-ExecStart=/usr/bin/python3 -I /opt/lan-chat/server.py --host 192.168.50.142 --port 8080 --tls-cert /etc/lan-chat/cert.pem --tls-key /etc/lan-chat/key.pem --http-port 8081
+ExecStart=/usr/bin/python3 -I /opt/lan-chat/server.py --host 192.168.50.142 --port 8080 --tls-cert /etc/lan-chat/cert.pem --tls-key /etc/lan-chat/key.pem --http-port 8081 --web-socket /run/lan-chat-web/web.sock
 Restart=on-failure
 RestartSec=30
 UMask=0077
@@ -27,7 +27,7 @@ ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
 ProcSubset=pid
-RestrictAddressFamilies=AF_INET AF_INET6
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
@@ -39,7 +39,7 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
 
-# LAN clients and Ollama only, no route to the internet
+# LAN clients and Ollama only, no route to the internet. Web access goes through lan-chat-web.
 IPAddressDeny=any
 IPAddressAllow=localhost 192.168.50.0/24
 

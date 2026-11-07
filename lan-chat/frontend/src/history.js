@@ -1,5 +1,6 @@
 // History lives in this tab only: it survives a reload and is gone when the tab closes
 const KEY = "lan-chat-history";
+const WEB_KEY = "lan-chat-web";
 const SAVE_DELAY_MS = 500;
 
 function serialize(messages) {
@@ -11,8 +12,26 @@ function serialize(messages) {
     ...(message.role === "assistant" && {
       // A reply that was streaming during a reload can't resume
       status: message.status?.type === "running" ? { type: "incomplete", reason: "cancelled" } : message.status,
+      ...(message.metadata?.custom?.web?.length && { metadata: { custom: { web: message.metadata.custom.web } } }),
     }),
   }));
+}
+
+export function loadWebChoice() {
+  try {
+    return sessionStorage.getItem(WEB_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
+export function saveWebChoice(on) {
+  try {
+    if (on) sessionStorage.setItem(WEB_KEY, "on");
+    else sessionStorage.removeItem(WEB_KEY);
+  } catch {
+    // Storage blocked: the choice just won't survive a reload
+  }
 }
 
 export function loadHistory() {

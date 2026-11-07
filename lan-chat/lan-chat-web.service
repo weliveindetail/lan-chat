@@ -1,0 +1,55 @@
+# Draft, not installed. See README.md
+[Unit]
+Description=Web search and fetch helper for lan-chat
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=lan-chat-web
+# The server connects through this group. /etc/lan-chat is owner-only, so TLS keys stay out of reach.
+Group=lan-chat
+RuntimeDirectory=lan-chat-web
+RuntimeDirectoryMode=0750
+# Read by systemd as root, then handed over privately. The unit won't start without the file.
+LoadCredential=tavily-api-key:/etc/lan-chat-web/tavily-api-key
+ExecStart=/usr/bin/python3 -I /opt/lan-chat/lan_chat_web.py --socket /run/lan-chat-web/web.sock --search-provider tavily
+Restart=on-failure
+RestartSec=30
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# A second layer under the address checks in lan_chat_web.py. Allow wins over deny,
+# so only the local DNS stub stays reachable on loopback.
+IPAddressDeny=localhost link-local multicast
+IPAddressDeny=0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 240.0.0.0/4
+IPAddressDeny=fc00::/7 64:ff9b::/96 64:ff9b:1::/48 2001::/32 2002::/16
+IPAddressAllow=127.0.0.53 127.0.0.54
+
+[Install]
+WantedBy=multi-user.target

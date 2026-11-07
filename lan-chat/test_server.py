@@ -49,7 +49,8 @@ class FakeUpstream(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
         try:
-            for item in owner.stream:
+            stream = owner.rounds.pop(0) if owner.rounds else owner.stream
+            for item in stream:
                 self.wfile.write(item)
                 self.wfile.flush()
                 time.sleep(owner.delay)
@@ -76,6 +77,7 @@ class ProxyTestCase(unittest.TestCase):
         self.delay = 0
         self.gate = None
         self.hold_open = False
+        self.rounds = []
         self.client_gone = threading.Event()
         self.stream = [
             sse_line({"role": "assistant", "content": "", "reasoning": "SECRET-THOUGHT"}),

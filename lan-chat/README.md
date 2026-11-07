@@ -8,17 +8,21 @@ The chat page is an [assistant-ui](https://github.com/assistant-ui/assistant-ui)
 
 | Path | Purpose |
 |---|---|
-| `server.py` | HTTPS, static files, chat proxy |
+| `server.py` | HTTPS, static files, chat proxy, tool loop |
+| `lan_chat_web.py` | Web helper: the only part with internet access |
 | `frontend/` | UI source (Vite, React, assistant-ui) |
 | `static/` | UI build output, served as is. Don't edit it by hand. |
 | `test_server.py` | Tests against a fake model server |
+| `test_web.py` | Tests for the helper and tool loop, with fake sites and a fake Tavily |
 | `lan-chat.service` | Draft systemd unit, not installed |
+| `lan-chat-web.service` | Draft systemd unit for the helper, not installed |
+| `tavily.sh` | Installs the Tavily key |
 | `install.sh` | Creates the account and certificate, and installs the files and unit |
 
 ## Run the tests and try it locally
 
 ```sh
-python3 -m unittest test_server
+python3 -m unittest test_server test_web
 python3 server.py
 ```
 
@@ -31,6 +35,14 @@ No route requires authentication.
 ### `GET /<file>`
 
 Serves files found in `static/` when the server starts, and `/` serves `index.html`. Any other route or method returns `404`.
+
+### `GET /api/web-status`
+
+Says whether web search can be used. `message` explains why not, and the UI shows it:
+
+```json
+{ "available": true, "provider": "Tavily", "message": null }
+```
 
 ### `POST /api/chat`
 
@@ -49,7 +61,8 @@ Send `Content-Type: application/json`:
 
 - `messages` is required: 1 to 200 items, each with a `role` of `user` or `assistant` and a string `content`.
 - `stream` is optional and defaults to `true`.
-- All other fields are ignored, including `model` and `max_tokens`. The server sets the model and the output limit.
+- `web` is optional and defaults to `false`. `true` offers the model the web tools, and requires streaming.
+- All other fields are ignored, including `model` and `max_tokens`. The server sets the model and the output limit. Clients can't send `tool` or `system` messages.
 - A browser `Origin` header, if sent, must match `Host`.
 
 **Streaming response** (`text/event-stream`):
@@ -70,6 +83,12 @@ data: [DONE]
 - `: thinking` is an SSE comment sent at most once a second while the model reasons. Reasoning text is never sent. Use it for a progress indicator or ignore it.
 - `finish_reason` of `length` means the output limit was reached. Reasoning counts towards that limit, so a reply can be cut off or even empty.
 - A failure during streaming arrives as `data: {"error": "..."}` and the stream then ends. If it ends with neither that nor `[DONE]`, treat the reply as incomplete.
+- With `web`, each search or page read also sends status events. Each one replaces the earlier event with the same `id`. `state` is `running`, `done`, `failed` or `blocked`. Search snippets and page text go only to the model.
+
+  ```text
+  data: {"web": {"id": 1, "tool": "web_search", "target": "the query", "state": "done", "detail": null, "results": [{"title": "A page", "url": "https://example.com/"}]}}
+  ```
+
 - To stop a reply, close the connection, for example with `AbortController` in `fetch`. The server then closes its connection to Ollama.
 
 **Non-streaming response** (`"stream": false`):
@@ -89,6 +108,53 @@ data: [DONE]
 | 415 | Content-Type is not JSON |
 | 429 | 2 chats are already running |
 | 502 | Ollama unavailable or returned an error |
+| 503 | `web` was requested but web search is unavailable |
+
+## Web search
+
+Each chat has a **Web search** checkbox, off by default and off again after **New chat**. Without it the model gets no tools and the helper isn't contacted.
+
+```text
+Browser --> server.py --> Ollama
+               |  tool loop, no internet route
+          Unix socket
+               v
+        lan_chat_web.py --> api.tavily.com, public websites
+```
+
+The model gets two tools: `web_search`, which sends the query to [Tavily](https://docs.tavily.com/documentation/api-reference/endpoint/search), and `fetch_url`, which reads a page as text. The browser never contacts these sites, so the CSP is unchanged.
+
+### Rules
+
+| Rule | Where it's enforced |
+|---|---|
+| `fetch_url` only takes URLs from this reply's search results or the user's messages, so an injected page can't send chat text to its own server. URLs found in a page can't be followed. | `server.py` |
+| At most 5 tool rounds and 8 tool calls per reply. The last round offers no tools, which forces an answer. | `server.py` |
+| Public addresses only, for every answer and every redirect hop, using the checked address for the connection so DNS can't change it afterwards | `lan_chat_web.py` |
+| GET only on ports 80 and 443, no cookies, no compression, no user names in URLs | `lan_chat_web.py` |
+| 20 seconds and 2 MiB per page, 5 redirects, 20,000 characters of text, text formats only, 8 search results, 4 requests at once | `lan_chat_web.py` |
+| No route to loopback (except the DNS stub), the LAN or Tailscale | `IPAddressDeny` in `lan-chat-web.service` |
+
+Tool results are labelled as untrusted for the model, but that label is only a request. The rules above are what limit the damage. Every step is listed in the reply, including refused ones, and refused URLs are never shown as links.
+
+### Tavily key
+
+The key lives in a root-only file. systemd reads it as root and passes a private copy to the helper through `$CREDENTIALS_DIRECTORY`. The `lan-chat` account can't read it, and it's kept apart from `/etc/lan-chat/`, which that account must be able to read.
+
+To install it, save the key to `/tmp/tavily` and run `tavily.sh`, which copies it to `/etc/lan-chat-web/tavily-api-key` with mode `600` and then shreds the temporary file.
+
+Outside systemd, use a file that only you can read:
+
+```sh
+python3 lan_chat_web.py --socket /tmp/web.sock --search-provider tavily --search-key-file ~/tavily-key
+python3 server.py --web-socket /tmp/web.sock
+```
+
+The helper refuses to start if the key file is readable by group or others, or doesn't hold a single line of text. The key is sent only in the `Authorization` header to `https://api.tavily.com/search`, and redirects from that address are not followed.
+
+Without `--search-provider` or a running helper, both tools are off, and the checkbox is disabled with the reason next to it. Normal chat keeps working. A missing key file stops `lan-chat-web` from starting, which the page reports as the helper not running.
+
+To add another search backend, subclass `SearchProvider` in `lan_chat_web.py`, add it to `PROVIDERS`, and change `LoadCredential` and `--search-provider` in the unit. A backend on the LAN or loopback, such as SearXNG, would also need exceptions to the address checks and `IPAddressDeny`.
 
 ## Frontend
 
@@ -103,7 +169,7 @@ npm run build
 The build replaces everything in `static/`. The server lists its files at startup, so restart it afterwards. A running service also needs the copy steps in [Start and stop](#start-and-stop).
 
 - **Requests:** the page calls `POST /api/chat` on its own origin through a custom assistant-ui adapter in `src/chatAdapter.js`, and sends the full history each time.
-- **History:** it is kept in `sessionStorage`, so it survives a reload and is gone when the tab closes. The server stores no chats.
+- **History:** it is kept in `sessionStorage`, along with the web checkbox and each reply's web steps, so they survive a reload and are gone when the tab closes. The server stores no chats.
 - **Model output:** HTML in replies is shown as text, unsafe link schemes are removed, and images are shown as links so they never load.
 - **Assistant Cloud:** it is not used. `@assistant-ui/react` depends on the `assistant-cloud` package, so its code and default URL are in the bundle, but it only runs if a `cloud` option is passed. The policy below would block it anyway.
 
@@ -124,20 +190,31 @@ A different folder of static files can be passed with `--static-dir`.
 | `--http-port` | none | Also serves plain HTTP on this port, alongside HTTPS. Requires `--tls-cert`. The chat limit covers both ports. |
 | `--max-tokens` | `8192` | Output limit, including reasoning |
 | `--no-think` | off | Turns off model reasoning: faster replies, possibly weaker answers |
+| `--web-socket` | none | The helper's Unix socket. Web search stays off without it. |
 | `--upstream-timeout` | `300` | Seconds to wait for each read from Ollama |
 | `--max-active-chats` | `2` | |
 | `--upstream-host`, `--upstream-port` | `127.0.0.1`, `11434` | |
 | `--static-dir` | `static/` | |
 
-## Start and stop
+Helper options, for `lan_chat_web.py`:
+
+| Option | Default | Notes |
+|---|---|---|
+| `--socket` | required | Created with mode `660` |
+| `--search-provider` | none | `tavily`. Web search stays off without it. |
+| `--search-key-file` | `$CREDENTIALS_DIRECTORY/tavily-api-key` | For running outside systemd |
+
+## Install
 
 ```sh
-npm ci && npm run build
+cd lan-chat
+cd frontend && npm ci && npm run build
 ./install.sh
-sudo systemctl start lan-chat
-systemctl status lan-chat
-journalctl -u lan-chat -n 50
-sudo systemctl stop lan-chat
+./tavily.sh
+sudo systemctl start lan-chat-web lan-chat
+systemctl status lan-chat lan-chat-web
+journalctl -u lan-chat -u lan-chat-web -n 50
+sudo systemctl stop lan-chat lan-chat-web
 ```
 
 Your friend opens `https://192.168.50.142:8080`, including the `https://`, because plain `http://` on this port doesn't load. The browser warns that the certificate isn't trusted. Your friend should compare its SHA-256 fingerprint with yours, then accept the warning. To show yours:
@@ -148,7 +225,7 @@ sudo openssl x509 -in /etc/lan-chat/cert.pem -noout -fingerprint -sha256
 
 `http://192.168.50.142:8081` also works, with no certificate warning. Chats on this port are not encrypted, so anyone on the LAN could read or change them. The firewall must allow port 8081 as well.
 
-To update after a change, repeat the `cp` and `chown` lines from `install.sh`, then restart the service.
+Run `refresh.sh` to update after a change. It rebuilds the page, installs the code and unit files, and restarts both services, which ends any running chats.
 
 The certificate lasts one year and is tied to `192.168.50.142`. To replace it, delete `/etc/lan-chat/key.pem`, run `install.sh` again and restart the service. Your friend then sees the warning again, with a new fingerprint.
 
@@ -158,6 +235,11 @@ The certificate lasts one year and is tied to `192.168.50.142`. To replace it, d
 - **Plain HTTP:** port 8081 has no encryption or server identity check. Remove `--http-port` from the unit to turn it off.
 - **Self-signed certificate:** HTTPS traffic is encrypted, but the browser can't confirm the server's identity. Someone on the LAN could impersonate it unless the fingerprint is compared.
 - **Address changes:** this machine's LAN address comes from DHCP (`ipv4.method` is `auto`), so `192.168.50.142` can change. If it does, the service can't bind and retries every 30 seconds. Reserve the address on the router, or update `lan-chat.service`, the firewall rule and the certificate.
-- **Friend's address:** `<FRIEND_IP>` may also change if their laptop uses DHCP.
 - **LAN range:** `IPAddressAllow` in the unit assumes `192.168.50.0/24`.
 - **Shared model:** chats compete with your own Ollama use.
+- **Web search without a password:** anyone on the LAN can spend your Tavily credits, up to 8 searches per reply, and read public pages from this machine's IP address. This was accepted when the password was left out.
+- **What leaves the LAN:** with the checkbox on, Tavily sees search queries, and websites see this machine's IP address.
+- **Prompt injection:** the rules stop a page making the model read unlisted URLs, but a page can still influence the answer. A search query could also carry chat text to Tavily, and a reply could contain a link holding chat text.
+- **Follow-up questions:** only text goes back to the server, so fetched pages are gone on the next turn, and URLs from earlier search results can't be fetched again unless they're searched for again.
+- **Page reading:** no JavaScript or PDFs, and pages are read with a simple HTML parser, so hidden text reaches the model and some sites will read poorly.
+- **Busy slots:** a chat holds one of the 2 slots for its whole tool loop.

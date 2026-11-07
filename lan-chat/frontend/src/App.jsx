@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionBarPrimitive,
   AssistantRuntimeProvider,
@@ -12,8 +12,8 @@ import {
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { chatAdapter } from "./chatAdapter.js";
-import { loadHistory, persistHistory } from "./history.js";
+import { createChatAdapter } from "./chatAdapter.js";
+import { loadHistory, loadWebChoice, persistHistory, saveWebChoice } from "./history.js";
 
 const remarkPlugins = [remarkGfm];
 
@@ -78,8 +78,71 @@ function RunIndicator() {
   const phase = useAuiState((s) => s.message.metadata?.custom?.phase);
   const hasText = useAuiState((s) => s.message.content.some((part) => part.type === "text" && part.text));
   if (phase === "thinking") return <Progress label="Thinking" />;
+  if (phase === "web") return <Progress label="Using the web" />;
   if (hasText) return null;
   return <Progress label="Waiting for the model" />;
+}
+
+// Addresses come from the web, so anything but http and https stays plain text
+function SourceLink({ url, children }) {
+  let safe = false;
+  try {
+    safe = ["http:", "https:"].includes(new URL(url).protocol);
+  } catch {
+    // Not a URL, so it isn't linked
+  }
+  if (!safe) return <span>{children}</span>;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  );
+}
+
+function activityLabel(item, running) {
+  const verb = item.tool === "web_search" ? "Search" : "Read";
+  if (item.state === "running") return `${verb}: ${running ? "in progress" : "stopped"}`;
+  if (item.state === "blocked") return `${verb}: refused`;
+  if (item.state === "failed") return `${verb}: failed`;
+  return verb;
+}
+
+function WebActivity() {
+  const activity = useAuiState((s) => s.message.metadata?.custom?.web);
+  const running = useAuiState((s) => s.message.status?.type === "running");
+  if (!activity?.length) return null;
+  return (
+    <details className="web-activity" open={running || undefined}>
+      <summary>
+        Web activity ({activity.length} {activity.length === 1 ? "step" : "steps"})
+      </summary>
+      <ul>
+        {activity.map((item) => (
+          <li key={item.id} className={`web-item web-item-${item.state}`}>
+            <span className="web-label">{activityLabel(item, running)}</span>{" "}
+            {/* A refused URL may carry leaked chat text, so it must not be one click away */}
+            {item.tool === "web_search" || item.state === "blocked" ? (
+              <span className="web-target">{item.target}</span>
+            ) : (
+              <span className="web-target">
+                <SourceLink url={item.target}>{item.target}</SourceLink>
+              </span>
+            )}
+            {item.detail && <div className="web-detail">{item.detail}</div>}
+            {item.tool === "web_search" && item.results?.length > 0 && (
+              <ul className="web-results">
+                {item.results.map((result, index) => (
+                  <li key={index}>
+                    <SourceLink url={result.url}>{result.title}</SourceLink>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
 }
 
 function noticeFor(status, hasText) {
@@ -134,6 +197,7 @@ const UserMessage = () => (
 
 const AssistantMessage = () => (
   <MessagePrimitive.Root className="message message-assistant">
+    <WebActivity />
     <MessagePrimitive.Parts components={{ Text: AssistantText }} />
     <AuiIf condition={(s) => s.message.status?.type === "running"}>
       <RunIndicator />
@@ -167,9 +231,62 @@ const Composer = () => (
   </ComposerPrimitive.Root>
 );
 
+function WebToggle({ status, on, onChange }) {
+  const available = status?.available === true;
+  return (
+    <div className="web-toggle">
+      <label>
+        <input
+          type="checkbox"
+          checked={available && on}
+          disabled={!available}
+          onChange={(event) => onChange(event.target.checked)}
+        />{" "}
+        Web search
+      </label>
+      {status === null && <span className="web-hint">Checking availability…</span>}
+      {status && !available && <span className="web-hint web-hint-warn">{status.message}</span>}
+      {available && on && (
+        <span className="web-hint">
+          The model can send search queries to {status.provider} and read public pages. Each step is listed in the
+          reply.
+        </span>
+      )}
+    </div>
+  );
+}
+
+function useWebStatus() {
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    let current = true;
+    fetch("/api/web-status")
+      .then((response) => {
+        if (!response.ok) throw new Error(String(response.status));
+        return response.json();
+      })
+      .catch(() => ({ available: false, message: "Couldn't check whether web search is available." }))
+      .then((result) => current && setStatus(result));
+    return () => {
+      current = false;
+    };
+  }, []);
+  return status;
+}
+
 export function App() {
   const [initialMessages] = useState(loadHistory);
-  const runtime = useLocalRuntime(chatAdapter, { initialMessages });
+  const webStatus = useWebStatus();
+  const [webChoice, setWebChoice] = useState(loadWebChoice);
+  const webOn = useRef(false);
+  webOn.current = webChoice && webStatus?.available === true;
+  const adapter = useMemo(() => createChatAdapter(() => webOn.current), []);
+  const runtime = useLocalRuntime(adapter, { initialMessages });
+
+  const chooseWeb = (on) => {
+    setWebChoice(on);
+    saveWebChoice(on);
+  };
 
   useEffect(() => persistHistory(runtime.thread), [runtime]);
 
@@ -177,6 +294,8 @@ export function App() {
     runtime.thread.cancelRun();
     runtime.thread.reset();
     runtime.thread.composer.setText("");
+    // Web access is chosen per chat, so each new one starts with it off
+    chooseWeb(false);
     document.querySelector(".composer-input")?.focus();
   };
 
@@ -199,6 +318,7 @@ export function App() {
               <ThreadPrimitive.ScrollToBottom className="button scroll-down" aria-label="Scroll to latest">
                 ↓
               </ThreadPrimitive.ScrollToBottom>
+              <WebToggle status={webStatus} on={webChoice} onChange={chooseWeb} />
               <Composer />
             </ThreadPrimitive.ViewportFooter>
           </ThreadPrimitive.Viewport>

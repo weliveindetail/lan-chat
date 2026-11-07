@@ -326,3 +326,53 @@ body {
   line-height: 1.4;
   resize: none;
 }
+
+.web-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding-bottom: 8px;
+  font-size: 0.9rem;
+}
+
+.web-hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.web-hint-warn {
+  color: var(--warn-text);
+}
+
+.web-activity {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.web-activity summary {
+  cursor: pointer;
+}
+
+.web-activity ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.web-item {
+  overflow-wrap: anywhere;
+}
+
+.web-label {
+  font-weight: 600;
+}
+
+.web-item-blocked .web-label,
+.web-item-failed .web-label {
+  color: var(--warn-text);
+}
+
+.web-detail {
+  font-size: 0.85rem;
+}
