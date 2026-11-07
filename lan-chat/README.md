@@ -121,6 +121,7 @@ A different folder of static files can be passed with `--static-dir`.
 |---|---|---|
 | `--host`, `--port` | `127.0.0.1`, `8080` | |
 | `--tls-cert`, `--tls-key` | none | Turn on HTTPS and must be used together. The key must not be accessible by group or others. |
+| `--http-port` | none | Also serves plain HTTP on this port, alongside HTTPS. Requires `--tls-cert`. The chat limit covers both ports. |
 | `--max-tokens` | `8192` | Output limit, including reasoning |
 | `--no-think` | off | Turns off model reasoning: faster replies, possibly weaker answers |
 | `--upstream-timeout` | `300` | Seconds to wait for each read from Ollama |
@@ -145,6 +146,8 @@ Your friend opens `https://192.168.50.142:8080`, including the `https://`, becau
 sudo openssl x509 -in /etc/lan-chat/cert.pem -noout -fingerprint -sha256
 ```
 
+`http://192.168.50.142:8081` also works, with no certificate warning. Chats on this port are not encrypted, so anyone on the LAN could read or change them. The firewall must allow port 8081 as well.
+
 To update after a change, repeat the `cp` and `chown` lines from `install.sh`, then restart the service.
 
 The certificate lasts one year and is tied to `192.168.50.142`. To replace it, delete `/etc/lan-chat/key.pem`, run `install.sh` again and restart the service. Your friend then sees the warning again, with a new fingerprint.
@@ -152,7 +155,8 @@ The certificate lasts one year and is tied to `192.168.50.142`. To replace it, d
 ## Known limits
 
 - **No password:** anyone who can reach the port can use the model, limited only by any firewall rules and the 2 active chats.
-- **Self-signed certificate:** traffic is encrypted, but the browser can't confirm the server's identity. Someone on the LAN could impersonate it unless the fingerprint is compared.
+- **Plain HTTP:** port 8081 has no encryption or server identity check. Remove `--http-port` from the unit to turn it off.
+- **Self-signed certificate:** HTTPS traffic is encrypted, but the browser can't confirm the server's identity. Someone on the LAN could impersonate it unless the fingerprint is compared.
 - **Address changes:** this machine's LAN address comes from DHCP (`ipv4.method` is `auto`), so `192.168.50.142` can change. If it does, the service can't bind and retries every 30 seconds. Reserve the address on the router, or update `lan-chat.service`, the firewall rule and the certificate.
 - **Friend's address:** `<FRIEND_IP>` may also change if their laptop uses DHCP.
 - **LAN range:** `IPAddressAllow` in the unit assumes `192.168.50.0/24`.

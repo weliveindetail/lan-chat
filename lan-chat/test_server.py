@@ -375,6 +375,20 @@ class TlsTests(ProxyTestCase):
         response = conn.getresponse()
         return response, response.read()
 
+    def test_plain_listener_shares_chat_slots(self):
+        settings = lan_chat.Config(upstream_port=self.upstream.server_port,
+                                   static_dir=Path(self.static.name), client_timeout=5)
+        plain = lan_chat.ChatServer(("127.0.0.1", 0), settings, chat_slots=self.proxy.chat_slots)
+        self.start(plain)
+        self.addCleanup(self.stop, plain)
+        self.assertEqual(self.call("GET", "/", proxy=plain)[0].status, 200)
+        data = json.dumps({"messages": [{"role": "user", "content": "Hi"}]})
+        headers = {"Content-Type": "application/json"}
+        for _ in range(2):
+            self.proxy.chat_slots.acquire()
+            self.addCleanup(self.proxy.chat_slots.release)
+        self.assertEqual(self.call("POST", "/api/chat", data, headers, proxy=plain)[0].status, 429)
+
     def test_page_served_over_tls(self):
         response, body = self.https()
         self.assertEqual((response.status, body), (200, b"<p>page</p>"))
@@ -431,6 +445,12 @@ class TlsTests(ProxyTestCase):
 class ArgumentTests(unittest.TestCase):
     def test_default_bind_is_loopback(self):
         self.assertEqual(lan_chat.parse_args([]).host, "127.0.0.1")
+
+    def test_http_port_needs_tls(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            lan_chat.parse_args(["--http-port", "8081"])
+        args = lan_chat.parse_args(["--tls-cert", "c", "--tls-key", "k", "--http-port", "8081"])
+        self.assertEqual(args.http_port, 8081)
 
     def test_cert_and_key_needed_together(self):
         for argv in (["--tls-cert", "c"], ["--tls-key", "k"]):

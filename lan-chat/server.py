@@ -8,7 +8,7 @@ import stat
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -123,7 +123,7 @@ def sse(obj):
 class ChatServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, config):
+    def __init__(self, address, config, chat_slots=None):
         super().__init__(address, Handler)
         self.config = config
         if config.tls_context:
@@ -131,7 +131,7 @@ class ChatServer(ThreadingHTTPServer):
             self.socket = config.tls_context.wrap_socket(
                 self.socket, server_side=True, do_handshake_on_connect=False)
         self.routes = static_routes(config.static_dir)
-        self.chat_slots = threading.BoundedSemaphore(config.max_active_chats)
+        self.chat_slots = chat_slots or threading.BoundedSemaphore(config.max_active_chats)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -369,6 +369,7 @@ def parse_args(argv=None):
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--tls-cert", help="certificate file, turns on HTTPS")
     parser.add_argument("--tls-key", help="private key file, required with --tls-cert")
+    parser.add_argument("--http-port", type=int, help="also serve plain HTTP on this port")
     parser.add_argument("--upstream-host", default="127.0.0.1")
     parser.add_argument("--upstream-port", type=int, default=11434)
     parser.add_argument("--static-dir", type=Path, default=Config.static_dir)
@@ -379,6 +380,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key must be used together")
+    if args.http_port is not None and not args.tls_cert:
+        parser.error("--http-port requires --tls-cert, because --port is already plain HTTP")
     return args
 
 
@@ -397,6 +400,12 @@ def main():
     server = ChatServer((args.host, args.port), config)
     scheme = "https" if args.tls_cert else "http"
     print(f"lan-chat on {scheme}://{args.host}:{server.server_port}", file=sys.stderr, flush=True)
+    if args.http_port is not None:
+        # Shares the slots so the chat limit covers both ports
+        plain = ChatServer((args.host, args.http_port), replace(config, tls_context=None),
+                           chat_slots=server.chat_slots)
+        threading.Thread(target=plain.serve_forever, daemon=True).start()
+        print(f"lan-chat on http://{args.host}:{plain.server_port}", file=sys.stderr, flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
