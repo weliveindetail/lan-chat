@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -xe
 
-cd "$(dirname "$0")"
+# Without this file the service would only listen on loopback
+if [ ! -f /etc/systemd/system/lan-chat.service.d/lan.conf ]; then
+  echo "Set LAN_CHAT_IP and LAN_CHAT_SUBNET and run install.sh first" >&2
+  exit 1
+fi
+
+cd "$(dirname "$0")/lan-chat"
 
 (cd frontend && npm ci && npm run build)
 

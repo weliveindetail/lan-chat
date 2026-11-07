@@ -75,11 +75,11 @@ class SiteTestCase(unittest.TestCase):
 
 class AddressTests(unittest.TestCase):
     def test_non_public_addresses_blocked(self):
-        for ip in ["127.0.0.1", "127.0.0.53", "10.0.0.1", "172.16.0.1", "192.168.50.142",
+        for ip in ["127.0.0.1", "127.0.0.53", "10.0.0.1", "172.16.0.1", "192.168.1.50",
                    "100.65.204.33", "100.64.0.1", "169.254.169.254", "0.0.0.0", "224.0.0.251",
                    "239.255.255.250", "240.0.0.1", "255.255.255.255", "192.0.0.1", "198.18.0.1",
                    "::", "::1", "fe80::1", "fc00::1", "fd7a:115c:a1e0::284d:cc22", "ff02::1",
-                   "::ffff:127.0.0.1", "::ffff:192.168.50.142", "::7f00:1", "64:ff9b::7f00:1",
+                   "::ffff:127.0.0.1", "::ffff:192.168.1.50", "::7f00:1", "64:ff9b::7f00:1",
                    "2002:7f00:1::", "2001:0:1::1", "not an ip", ""]:
             with self.subTest(ip=ip):
                 self.assertFalse(web.is_public_ip(ip))
@@ -113,7 +113,7 @@ class UrlRuleTests(SiteTestCase):
         fetcher = web.Fetcher()
         for url in ["http://127.0.0.1/", "http://localhost/", "http://[::1]/", "http://0/",
                     "http://2130706433/", "http://0x7f.0.0.1/", "http://127.1/",
-                    "http://[::ffff:127.0.0.1]/", "http://192.168.50.142/"]:
+                    "http://[::ffff:127.0.0.1]/", "http://192.168.1.50/"]:
             with self.subTest(url=url):
                 self.refuses(fetcher, url)
 
@@ -740,7 +740,7 @@ class UnitFileTests(unittest.TestCase):
     def test_server_unit_still_has_no_internet(self):
         unit = (Path(__file__).parent / "lan-chat.service").read_text()
         self.assertIn("IPAddressDeny=any", unit)
-        self.assertIn("IPAddressAllow=localhost 192.168.50.0/24", unit)
+        self.assertIn("IPAddressAllow=localhost\n", unit)
 
 
 if __name__ == "__main__":

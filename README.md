@@ -2,26 +2,51 @@
 
 A chat page for the local `qwen3.6:35b` model in Ollama, served over HTTPS with a self-signed certificate. There is no password, so anyone who can reach the port can use it. The server uses only the Python standard library. Ollama stays on loopback, and this server is the only thing exposed to the LAN.
 
-The chat page is an [assistant-ui](https://github.com/assistant-ui/assistant-ui) React app, built once into plain files in `static/`. No Node process runs at runtime. See [Frontend](#frontend).
+The chat page is an [assistant-ui](https://github.com/assistant-ui/assistant-ui) React app, built once into plain files in `lan-chat/static/`. No Node process runs at runtime. See [Frontend](#frontend).
 
-## Files
+## Prerequisites
 
-| Path | Purpose |
-|---|---|
-| `server.py` | HTTPS, static files, chat proxy, tool loop |
-| `lan_chat_web.py` | Web helper: the only part with internet access |
-| `frontend/` | UI source (Vite, React, assistant-ui) |
-| `static/` | UI build output, served as is. Don't edit it by hand. |
-| `test_server.py` | Tests against a fake model server |
-| `test_web.py` | Tests for the helper and tool loop, with fake sites and a fake Tavily |
-| `lan-chat.service` | Draft systemd unit, not installed |
-| `lan-chat-web.service` | Draft systemd unit for the helper, not installed |
-| `tavily.sh` | Installs the Tavily key |
-| `install.sh` | Creates the account and certificate, and installs the files and unit |
+- **System:** Linux with systemd, and `sudo` access. The scripts also use `openssl`.
+- **Python:** 3.10 or newer at `/usr/bin/python3`, with no extra packages.
+- **Node:** 22 or newer with `npm`, only for building the page.
+- **Ollama:** running on `127.0.0.1:11434`, and not exposed to the LAN, with the model pulled by `ollama pull qwen3.6:35b`. The model is about 23 GB, so the machine needs enough memory to run it.
+- **Tavily API key:** only for web search. Without one, `lan-chat-web` can't start and `refresh.sh` reports an error at its restart step. Normal chat should still work, with web search off.
+- **Firewall:** if one is active, allow ports 8080 and 8081 from your LAN, for example `sudo ufw allow from "$LAN_CHAT_SUBNET" to any port 8080,8081 proto tcp`.
+
+## Install
+
+Set this machine's address and your LAN range, using your own values:
+
+```sh
+export LAN_CHAT_IP=192.168.1.50
+export LAN_CHAT_SUBNET=192.168.1.0/24
+# First save your Tavily key to /tmp/tavily
+./tavily.sh
+./install.sh
+./refresh.sh
+systemctl status lan-chat lan-chat-web
+journalctl -u lan-chat -u lan-chat-web -n 50
+sudo systemctl stop lan-chat lan-chat-web
+sudo systemctl enable lan-chat-web lan-chat
+```
+
+This takes effect at the next boot and doesn't start or stop anything now. To undo it, use `disable` in place of `enable`.
+
+`https://$LAN_CHAT_IP:8080` warns that the certificate isn't trusted. Check the SHA-256 fingerprint is the following and accept:
+```sh
+C7:8A:CE:A7:12:81:C8:7C:7C:F8:4F:68:50:58:9D:E6:CC:EA:00:D7:D6:94:D1:96:F8:93:72:60:37:52:45:B2
+```
+
+`http://$LAN_CHAT_IP:8081` works without certificate, because it's not encrypted. Anyone on the LAN could read or change traffic.
+
+Run `refresh.sh` to update after a change. It rebuilds the page, installs the code and unit files, and restarts both services, which ends any running chats.
+
+The certificate lasts one year and is tied to `LAN_CHAT_IP`. To replace it, delete `/etc/lan-chat/key.pem`, then run `install.sh` and `refresh.sh` again. Your friend then sees the warning again, with a new fingerprint.
 
 ## Run the tests and try it locally
 
 ```sh
+cd lan-chat
 python3 -m unittest test_server test_web
 python3 server.py
 ```
@@ -34,7 +59,7 @@ No route requires authentication.
 
 ### `GET /<file>`
 
-Serves files found in `static/` when the server starts, and `/` serves `index.html`. Any other route or method returns `404`.
+Serves files found in `lan-chat/static/` when the server starts, and `/` serves `index.html`. Any other route or method returns `404`.
 
 ### `GET /api/web-status`
 
@@ -128,12 +153,12 @@ The model gets two tools: `web_search`, which sends the query to [Tavily](https:
 
 | Rule | Where it's enforced |
 |---|---|
-| `fetch_url` only takes URLs from this reply's search results or the user's messages, so an injected page can't send chat text to its own server. URLs found in a page can't be followed. | `server.py` |
-| At most 5 tool rounds and 8 tool calls per reply. The last round offers no tools, which forces an answer. | `server.py` |
-| Public addresses only, for every answer and every redirect hop, using the checked address for the connection so DNS can't change it afterwards | `lan_chat_web.py` |
-| GET only on ports 80 and 443, no cookies, no compression, no user names in URLs | `lan_chat_web.py` |
-| 20 seconds and 2 MiB per page, 5 redirects, 20,000 characters of text, text formats only, 8 search results, 4 requests at once | `lan_chat_web.py` |
-| No route to loopback (except the DNS stub), the LAN or Tailscale | `IPAddressDeny` in `lan-chat-web.service` |
+| `fetch_url` only takes URLs from this reply's search results or the user's messages, so an injected page can't send chat text to its own server. URLs found in a page can't be followed. | `lan-chat/server.py` |
+| At most 5 tool rounds and 8 tool calls per reply. The last round offers no tools, which forces an answer. | `lan-chat/server.py` |
+| Public addresses only, for every answer and every redirect hop, using the checked address for the connection so DNS can't change it afterwards | `lan-chat/lan_chat_web.py` |
+| GET only on ports 80 and 443, no cookies, no compression, no user names in URLs | `lan-chat/lan_chat_web.py` |
+| 20 seconds and 2 MiB per page, 5 redirects, 20,000 characters of text, text formats only, 8 search results, 4 requests at once | `lan-chat/lan_chat_web.py` |
+| No route to loopback (except the DNS stub), the LAN or Tailscale | `IPAddressDeny` in `lan-chat/lan-chat-web.service` |
 
 Tool results are labelled as untrusted for the model, but that label is only a request. The rules above are what limit the damage. Every step is listed in the reply, including refused ones, and refused URLs are never shown as links.
 
@@ -146,6 +171,7 @@ To install it, save the key to `/tmp/tavily` and run `tavily.sh`, which copies i
 Outside systemd, use a file that only you can read:
 
 ```sh
+cd lan-chat
 python3 lan_chat_web.py --socket /tmp/web.sock --search-provider tavily --search-key-file ~/tavily-key
 python3 server.py --web-socket /tmp/web.sock
 ```
@@ -154,26 +180,26 @@ The helper refuses to start if the key file is readable by group or others, or d
 
 Without `--search-provider` or a running helper, both tools are off, and the checkbox is disabled with the reason next to it. Normal chat keeps working. A missing key file stops `lan-chat-web` from starting, which the page reports as the helper not running.
 
-To add another search backend, subclass `SearchProvider` in `lan_chat_web.py`, add it to `PROVIDERS`, and change `LoadCredential` and `--search-provider` in the unit. A backend on the LAN or loopback, such as SearXNG, would also need exceptions to the address checks and `IPAddressDeny`.
+To add another search backend, subclass `SearchProvider` in `lan-chat/lan_chat_web.py`, add it to `PROVIDERS`, and change `LoadCredential` and `--search-provider` in the unit. A backend on the LAN or loopback, such as SearXNG, would also need exceptions to the address checks and `IPAddressDeny`.
 
 ## Frontend
 
-Build with Node 22 or newer. `npm ci` uses the committed lockfile, and `frontend/.npmrc` turns off install scripts and pins new dependencies to exact versions.
+Build with Node 22 or newer. `npm ci` uses the committed lockfile, and `lan-chat/frontend/.npmrc` turns off install scripts and pins new dependencies to exact versions.
 
 ```sh
-cd frontend
+cd lan-chat/frontend
 npm ci
 npm run build
 ```
 
-The build replaces everything in `static/`. The server lists its files at startup, so restart it afterwards. A running service also needs the copy steps in [Start and stop](#start-and-stop).
+The build replaces everything in `lan-chat/static/`. The server lists its files at startup, so restart it afterwards. To update a running service, use `refresh.sh` from [Install](#install).
 
-- **Requests:** the page calls `POST /api/chat` on its own origin through a custom assistant-ui adapter in `src/chatAdapter.js`, and sends the full history each time.
+- **Requests:** the page calls `POST /api/chat` on its own origin through a custom assistant-ui adapter in `lan-chat/frontend/src/chatAdapter.js`, and sends the full history each time.
 - **History:** it is kept in `sessionStorage`, along with the web checkbox and each reply's web steps, so they survive a reload and are gone when the tab closes. The server stores no chats.
 - **Model output:** HTML in replies is shown as text, unsafe link schemes are removed, and images are shown as links so they never load.
 - **Assistant Cloud:** it is not used. `@assistant-ui/react` depends on the `assistant-cloud` package, so its code and default URL are in the bundle, but it only runs if a `cloud` option is passed. The policy below would block it anyway.
 
-The server sends this policy with every response. The current UI works with it unchanged, so any other UI must also avoid CDNs, inline scripts and inline styles, or `SECURITY_HEADERS` in `server.py` must change.
+The server sends this policy with every response. The current UI works with it unchanged, so any other UI must also avoid CDNs, inline scripts and inline styles, or `SECURITY_HEADERS` in `lan-chat/server.py` must change.
 
 ```text
 default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
@@ -194,9 +220,9 @@ A different folder of static files can be passed with `--static-dir`.
 | `--upstream-timeout` | `300` | Seconds to wait for each read from Ollama |
 | `--max-active-chats` | `2` | |
 | `--upstream-host`, `--upstream-port` | `127.0.0.1`, `11434` | |
-| `--static-dir` | `static/` | |
+| `--static-dir` | `lan-chat/static/` | |
 
-Helper options, for `lan_chat_web.py`:
+Helper options, for `lan-chat/lan_chat_web.py`:
 
 | Option | Default | Notes |
 |---|---|---|
@@ -204,41 +230,13 @@ Helper options, for `lan_chat_web.py`:
 | `--search-provider` | none | `tavily`. Web search stays off without it. |
 | `--search-key-file` | `$CREDENTIALS_DIRECTORY/tavily-api-key` | For running outside systemd |
 
-## Install
-
-```sh
-cd lan-chat
-cd frontend && npm ci && npm run build
-./install.sh
-./tavily.sh
-sudo systemctl start lan-chat-web lan-chat
-systemctl status lan-chat lan-chat-web
-journalctl -u lan-chat -u lan-chat-web -n 50
-sudo systemctl stop lan-chat lan-chat-web
-```
-
-Your friend opens `https://192.168.50.142:8080`, including the `https://`, because plain `http://` on this port doesn't load. The browser warns that the certificate isn't trusted. Your friend should compare its SHA-256 fingerprint with yours, then accept the warning. To show yours:
-
-```sh
-sudo openssl x509 -in /etc/lan-chat/cert.pem -noout -fingerprint -sha256
-```
-
-`http://192.168.50.142:8081` also works, with no certificate warning. Chats on this port are not encrypted, so anyone on the LAN could read or change them. The firewall must allow port 8081 as well.
-
-Run `refresh.sh` to update after a change. It rebuilds the page, installs the code and unit files, and restarts both services, which ends any running chats.
-
-The certificate lasts one year and is tied to `192.168.50.142`. To replace it, delete `/etc/lan-chat/key.pem`, run `install.sh` again and restart the service. Your friend then sees the warning again, with a new fingerprint.
-
 ## Known limits
 
-- **No password:** anyone who can reach the port can use the model, limited only by any firewall rules and the 2 active chats.
 - **Plain HTTP:** port 8081 has no encryption or server identity check. Remove `--http-port` from the unit to turn it off.
 - **Self-signed certificate:** HTTPS traffic is encrypted, but the browser can't confirm the server's identity. Someone on the LAN could impersonate it unless the fingerprint is compared.
-- **Address changes:** this machine's LAN address comes from DHCP (`ipv4.method` is `auto`), so `192.168.50.142` can change. If it does, the service can't bind and retries every 30 seconds. Reserve the address on the router, or update `lan-chat.service`, the firewall rule and the certificate.
-- **LAN range:** `IPAddressAllow` in the unit assumes `192.168.50.0/24`.
+- **Address changes:** if this machine's LAN address changes, the service can't bind and retries every 30 seconds. Reserve the address on the router. If it does change, set the new `LAN_CHAT_IP`, delete `/etc/lan-chat/key.pem`, run `install.sh` and `refresh.sh`, and update the firewall rule.
+- **LAN range:** only clients in `LAN_CHAT_SUBNET` can connect, so devices elsewhere, such as on a guest network, can't reach the page.
 - **Shared model:** chats compete with your own Ollama use.
-- **Web search without a password:** anyone on the LAN can spend your Tavily credits, up to 8 searches per reply, and read public pages from this machine's IP address. This was accepted when the password was left out.
-- **What leaves the LAN:** with the checkbox on, Tavily sees search queries, and websites see this machine's IP address.
 - **Prompt injection:** the rules stop a page making the model read unlisted URLs, but a page can still influence the answer. A search query could also carry chat text to Tavily, and a reply could contain a link holding chat text.
 - **Follow-up questions:** only text goes back to the server, so fetched pages are gone on the next turn, and URLs from earlier search results can't be fetched again unless they're searched for again.
 - **Page reading:** no JavaScript or PDFs, and pages are read with a simple HTML parser, so hidden text reaches the model and some sites will read poorly.

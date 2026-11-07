@@ -8,7 +8,7 @@ Let the local model use the internet when a user asks for it, without giving the
 
 Two read-only tools, `web_search` and `fetch_url`. The tool loop runs in `server.py`, and internet access exists only in a separate helper, `lan_chat_web.py`, reached over a Unix socket. Tavily is the search provider.
 
-Each chat has a checkbox that defaults to off. There is still no password, so anyone on the LAN can use web search and spend Tavily credits. The rules are listed in [lan-chat/README.md](../lan-chat/README.md#web-search).
+Each chat has a checkbox that defaults to off. There is still no password, so anyone on the LAN can use web search and spend Tavily credits. The rules are listed in [README.md](../README.md#web-search).
 
 ## What was measured
 

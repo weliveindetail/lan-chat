@@ -1,4 +1,3 @@
-# Draft, not installed. See README.md
 [Unit]
 Description=Web search and fetch helper for lan-chat
 After=network-online.target

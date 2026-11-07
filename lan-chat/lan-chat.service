@@ -1,4 +1,3 @@
-# Draft, not installed. See README.md
 [Unit]
 Description=LAN chat page for local Ollama
 After=network-online.target ollama.service lan-chat-web.service
@@ -9,7 +8,9 @@ StartLimitIntervalSec=0
 Type=simple
 User=lan-chat
 Group=lan-chat
-ExecStart=/usr/bin/python3 -I /opt/lan-chat/server.py --host 192.168.50.142 --port 8080 --tls-cert /etc/lan-chat/cert.pem --tls-key /etc/lan-chat/key.pem --http-port 8081 --web-socket /run/lan-chat-web/web.sock
+# install.sh sets the real address and LAN range in lan-chat.service.d/lan.conf
+Environment=LAN_CHAT_IP=127.0.0.1
+ExecStart=/usr/bin/python3 -I /opt/lan-chat/server.py --host ${LAN_CHAT_IP} --port 8080 --tls-cert /etc/lan-chat/cert.pem --tls-key /etc/lan-chat/key.pem --http-port 8081 --web-socket /run/lan-chat-web/web.sock
 Restart=on-failure
 RestartSec=30
 UMask=0077
@@ -41,7 +42,7 @@ SystemCallFilter=~@privileged @resources
 
 # LAN clients and Ollama only, no route to the internet. Web access goes through lan-chat-web.
 IPAddressDeny=any
-IPAddressAllow=localhost 192.168.50.0/24
+IPAddressAllow=localhost
 
 [Install]
 WantedBy=multi-user.target
